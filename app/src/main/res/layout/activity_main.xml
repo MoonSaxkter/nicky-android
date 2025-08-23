@@ -123,6 +123,13 @@
                 android:elevation="8dp"
                 android:stateListAnimator="@animator/subtle_press"/>
 
+            <Button
+                android:id="@+id/buttonListen"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="🎙️ Escuchar"
+                android:layout_marginTop="12dp"/>
+
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 
@@ -134,6 +141,7 @@
         android:layout_marginEnd="24dp"
         android:layout_marginBottom="32dp"
         android:src="@drawable/ic_minimal_settings"
+        android:contentDescription="@string/app_name"
         app:tint="#FFFFFF"
         app:backgroundTint="#1A1A1A"
         app:borderWidth="0dp"
