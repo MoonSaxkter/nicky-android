@@ -20,7 +20,7 @@ import java.util.Locale
 
 private const val LISTEN_WINDOW_MS = 6000L
 private const val FOLLOWUP_MS = 10000L
-private val KEYWORDS = listOf("nicky", "niki", "niky")
+private val KEYWORDS = listOf("nicky", "niki", "niky", "nikki", "nicol", "asistente", "ayuda")
 
 private var listenJob: kotlinx.coroutines.Job? = null
 private var windowJob: kotlinx.coroutines.Job? = null
@@ -343,7 +343,14 @@ class MainActivity : AppCompatActivity() {
                 val consulta = low.removePrefix("buscar ").removePrefix("investiga ").trim()
                 if (consulta.isBlank()) "¿Qué querés que busque?" else "Buscaré: $consulta. (demo)"
             } else {
-                "Te escuché: $finalText"
+                // Variar un poco para sonar más natural
+                val opciones = listOf(
+                    "Te escuché: $finalText",
+                    "Entendí: $finalText",
+                    "Escuché que dijiste: $finalText",
+                    "Vale, $finalText"
+                )
+                opciones.random()
             }
 
         if (isOnline) {
