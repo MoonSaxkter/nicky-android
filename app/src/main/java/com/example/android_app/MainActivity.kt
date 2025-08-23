@@ -17,9 +17,17 @@ import com.example.android_app.stt.Speech
 import android.speech.tts.TextToSpeech
 import android.speech.SpeechRecognizer
 import java.util.Locale
+import android.content.pm.PackageManager
+import android.os.SystemClock
 
 private const val LISTEN_WINDOW_MS = 6000L
 private const val FOLLOWUP_MS = 10000L
+
+// Espera mínima antes de reabrir el micro tras hablar (online u offline)
+private const val MIC_REOPEN_DELAY_MS = 0L
+
+// Cooldown para evitar “flapping” si se intenta abrir el micro demasiado seguido
+private const val MIC_COOLDOWN_MS = 900L
 private val KEYWORDS = listOf("nicky", "niki", "niky", "nikki", "nicol", "asistente", "ayuda")
 
 private var listenJob: kotlinx.coroutines.Job? = null
@@ -31,6 +39,10 @@ private var followupUntil: Long = 0L
 private var greetedUntil: Long = 0L
 private var partialDebounceJob: kotlinx.coroutines.Job? = null
 private var handlingUtterance: Boolean = false
+private var lastMicOpenAt: Long = 0L
+private val ttsCallbacks = mutableMapOf<String, () -> Unit>()
+
+private var onMicGranted: (() -> Unit)? = null
 
 class MainActivity : AppCompatActivity() {
 
@@ -47,17 +59,17 @@ class MainActivity : AppCompatActivity() {
     private enum class State { IDLE, SPEAKING, LISTENING }
     private var state: State = State.IDLE
 
-    // Permiso micrófono
+    // Permiso micrófono (ejecuta acción pendiente al conceder)
     private val askAudioPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            startListening()
+            onMicGranted?.let { it() }
+            onMicGranted = null
         } else {
             textView.text = "Permiso de micrófono denegado"
         }
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -80,15 +92,35 @@ class MainActivity : AppCompatActivity() {
 
         // TTS local (para fallback)
         tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale("es", "ES") // usa "es-ES" como dijiste
-            }
+            ensureTtsLanguage(status)
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) { /* no-op */ }
+                override fun onDone(utteranceId: String?) {
+                    if (utteranceId == null) return
+                    val cb = synchronized(ttsCallbacks) { ttsCallbacks.remove(utteranceId) }
+                    if (cb != null) runOnUiThread { cb() }
+                }
+                override fun onError(utteranceId: String?) {
+                    synchronized(ttsCallbacks) { ttsCallbacks.remove(utteranceId) }
+                }
+            })
         }
 
         // Botón Hablar: inicia el ciclo manos libres con palabra clave
         buttonTalk.setOnClickListener {
             stopListeningIfNeeded()
-            speakAndThenListen("Hola, soy Nicky. ¿Listo para conversar?")
+            tts?.stop()
+
+            val action = {
+                speakAndThenListen("Hola, soy Nicky. ¿Listo para conversar?")
+            }
+
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                action()
+            } else {
+                onMicGranted = action
+                askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+            }
         }
 
         // (Opcional) Botón Escuchar manual
@@ -99,15 +131,73 @@ class MainActivity : AppCompatActivity() {
                 state = State.IDLE
             } else {
                 tts?.stop()
-                askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                val action = { startListeningWindow("es-ES") }
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    action()
+                } else {
+                    onMicGranted = action
+                    askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
             }
         }
+    }
 
-        // Pide permiso una vez al abrir para que la primera vuelta pueda escuchar sola
-        askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+    /**
+     * Busca un Locale de español disponible para TTS.
+     */
+    private fun pickAvailableSpanishLocale(tts: TextToSpeech?): Locale {
+        val locales = listOf(
+            Locale("es", "ES"),
+            Locale("es", "MX"),
+            Locale("es", "AR"),
+            Locale("es", "US"),
+            Locale("es"),
+            Locale("es", "CO"),
+            Locale("es", "CL")
+        )
+        if (tts != null) {
+            for (loc in locales) {
+                val result = tts.isLanguageAvailable(loc)
+                if (result == TextToSpeech.LANG_COUNTRY_AVAILABLE ||
+                    result == TextToSpeech.LANG_AVAILABLE ||
+                    result == TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE
+                ) {
+                    return loc
+                }
+            }
+        }
+        // Fallback
+        return Locale("es", "ES")
+    }
+
+    /**
+     * Asegura que el TTS use un idioma español disponible.
+     */
+    private fun ensureTtsLanguage(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            val loc = pickAvailableSpanishLocale(tts)
+            tts?.language = loc
+        }
     }
 
     private fun startListeningWindow(language: String = "es-ES") {
+
+        // Evitar abrir micro si el TTS sigue hablando
+        if (state == State.SPEAKING) {
+            textView.postDelayed({ startListeningWindow(language) }, 200)
+            return
+        }
+
+        // Cooldown para evitar "flapping" del micrófono
+        val nowTs = SystemClock.elapsedRealtime()
+        val sinceLastOpen = nowTs - lastMicOpenAt
+        if (sinceLastOpen in 0..MIC_COOLDOWN_MS) {
+            // Reintentar luego del cooldown restante
+            val remaining = MIC_COOLDOWN_MS - sinceLastOpen
+            textView.postDelayed({ startListeningWindow(language) }, remaining)
+            return
+        }
+        lastMicOpenAt = nowTs
         // Si ya estaba escuchando, corta esa sesión
         stopListeningIfNeeded()
 
@@ -167,7 +257,7 @@ class MainActivity : AppCompatActivity() {
                                         textView.text = "Nicky está hablando (local)…"
                                         tts?.speak(aviso, TextToSpeech.QUEUE_FLUSH, null, "nicky_prompt_kw")
                                         launch {
-                                            kotlinx.coroutines.delay(800)
+                                            kotlinx.coroutines.delay(MIC_REOPEN_DELAY_MS)
                                             startListeningWindow(language)
                                         }
                                     }
@@ -187,7 +277,7 @@ class MainActivity : AppCompatActivity() {
                 com.example.android_app.stt.Speech.listenFlow(
                     recognizer = recognizerLocal,
                     language = language,
-                    preferOffline = false
+                    preferOffline = !isOnline
                 ).collectLatest { ev ->
                     ev.listening?.let { listening ->
                         if (!listening) {
@@ -206,23 +296,23 @@ class MainActivity : AppCompatActivity() {
                                     state = State.IDLE
 
                                     if (finalFromPartial.isNullOrEmpty()) {
-                                        val aviso = "No te escuché bien. Decí ‘Nicky’ y tu pedido."
-                                        if (isOnline) {
-                                            VoiceService.speak(
-                                                context = this@MainActivity,
-                                                text = aviso,
-                                                onStart = { textView.text = "Nicky está hablando (nube)..." },
-                                                onDone  = { startListeningWindow(language) },
-                                                onError = { msg -> textView.text = "Error: $msg" }
-                                            )
-                                        } else {
-                                            textView.text = "Nicky está hablando (local)…"
-                                            tts?.speak(aviso, TextToSpeech.QUEUE_FLUSH, null, "nicky_prompt_kw")
-                                            launch {
-                                                kotlinx.coroutines.delay(800)
-                                                startListeningWindow(language)
-                                            }
+                                    val aviso = "No te escuché bien. Decí ‘Nicky’ y tu pedido."
+                                    if (isOnline) {
+                                        VoiceService.speak(
+                                            context = this@MainActivity,
+                                            text = aviso,
+                                            onStart = { textView.text = "Nicky está hablando (nube)..." },
+                                            onDone  = { textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS) },
+                                            onError = { msg -> textView.text = "Error: $msg" }
+                                        )
+                                    } else {
+                                        textView.text = "Nicky está hablando (local)…"
+                                        tts?.speak(aviso, TextToSpeech.QUEUE_FLUSH, null, "nicky_prompt_kw")
+                                        launch {
+                                            kotlinx.coroutines.delay(MIC_REOPEN_DELAY_MS)
+                                            startListeningWindow(language)
                                         }
+                                    }
                                     } else {
                                         handlingUtterance = true
                                         handleFinalText(language, finalFromPartial)
@@ -281,16 +371,45 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     ev.error?.let { err ->
-                        partialDebounceJob?.cancel()
-                        partialDebounceJob = null
-                        finalizeJob?.cancel()
-                        finalizeJob = null
+                        // --- Chequeo de errores de idioma y fallback ---
+                        val errLower = err.lowercase()
+                        val isLanguageIssue = errLower.contains("idioma") ||
+                                errLower.contains("language") ||
+                                errLower.contains("not supported") ||
+                                errLower.contains("no soporta") ||
+                                errLower.contains("no soportado")
+                        if (isLanguageIssue) {
+                            if (isOnline) {
+                                textView.text = "⚠️ El reconocimiento no soporta el idioma $language. Probando español estándar…"
+                                startListeningWindow("es-ES")
+                            } else {
+                                textView.text = "Sin Internet (modo local). Instalá el paquete de voz ‘Español’ para dictado sin conexión (Gboard &gt; Voice typing &gt; Offline speech recognition)."
+                                // No reintentar en offline para evitar flapping
+                            }
+                            return@let
+                        }
+
+                        // Limpiar estados locales de esta sesión
+                        partialDebounceJob?.cancel(); partialDebounceJob = null
+                        finalizeJob?.cancel(); finalizeJob = null
                         lastPartial = null
                         isListening = false
                         state = State.IDLE
-                        textView.text = "⚠️ $err"
-                        // Reintenta si estás online
-                        if (isOnline) startListeningWindow(language)
+
+                        val isNetworkish = errLower.contains("red") ||
+                                errLower.contains("network") ||
+                                errLower.contains("timeout") ||
+                                errLower.contains("tiempo de red")
+
+                        if (!isOnline) {
+                            // OFFLINE: NO reintentar de inmediato para evitar el "flapping" del micrófono.
+                            textView.text = "Sin Internet (modo local). Para usar dictado sin conexión, descargá el paquete de voz ‘Español’ (Gboard > Voice typing > Offline speech recognition). Tocá “Hablar” cuando estés listo."
+                            // Importante: NO llamar a startListeningWindow aquí.
+                        } else {
+                            // ONLINE: mostramos el error y reintentamos.
+                            textView.text = "⚠️ $err"
+                            textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS)
+                        }
                     }
                 }
             } catch (_: kotlinx.coroutines.CancellationException) {
@@ -312,6 +431,34 @@ class MainActivity : AppCompatActivity() {
         finalizeJob?.cancel()
         partialDebounceJob?.cancel()
         val low = finalText.lowercase()
+        // --- Comandos de salida (funcionan siempre, con o sin keyword) ---
+        run {
+            val exitCommands = setOf("salir", "cerrar", "terminar", "cierra", "apagar")
+            if (exitCommands.contains(low.trim())) {
+                handlingUtterance = true
+                windowJob?.cancel()
+                finalizeJob?.cancel()
+                partialDebounceJob?.cancel()
+
+                val despedida = "Hasta luego."
+                if (isOnline) {
+                    lifecycleScope.launch {
+                        VoiceService.speak(
+                            context = this@MainActivity,
+                            text = despedida,
+                            onStart = { textView.text = "Nicky está cerrando la aplicación…" },
+                            onDone  = { finishAffinity() },
+                            onError = { finishAffinity() }
+                        )
+                    }
+                } else {
+                    textView.text = "Nicky está cerrando la aplicación…"
+                    tts?.speak(despedida, TextToSpeech.QUEUE_FLUSH, null, "nicky_exit")
+                    textView.postDelayed({ finishAffinity() }, 1000)
+                }
+                return
+            }
+        }
         val hasKeyword = KEYWORDS.any { k -> low.contains(k) }
         val allowFollowup = System.currentTimeMillis() <= followupUntil
         val proceed = hasKeyword || allowFollowup
@@ -324,14 +471,14 @@ class MainActivity : AppCompatActivity() {
                         context = this@MainActivity,
                         text = aviso,
                         onStart = { textView.text = "Nicky está hablando (nube)..." },
-                        onDone  = { startListeningWindow(language) },
+                        onDone  = { textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS) },
                         onError = { msg -> textView.text = "Error: $msg" }
                     )
                 }
             } else {
                 textView.text = "Nicky está hablando (local)…"
                 tts?.speak(aviso, TextToSpeech.QUEUE_FLUSH, null, "nicky_prompt_kw")
-                textView.postDelayed({ startListeningWindow(language) }, 800)
+                textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS)
             }
             return
         } else {
@@ -412,14 +559,14 @@ class MainActivity : AppCompatActivity() {
                     context = this@MainActivity,
                     text = respuesta,
                     onStart = { textView.text = "Nicky está hablando (nube)..." },
-                    onDone  = { startListeningWindow(language) },
+                    onDone  = { textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS) },
                     onError = { msg -> textView.text = "Error: $msg" }
                 )
             }
         } else {
             textView.text = "Nicky está hablando (local)…"
             tts?.speak(respuesta, TextToSpeech.QUEUE_FLUSH, null, "nicky_reply")
-            textView.postDelayed({ startListeningWindow(language) }, 800)
+            textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS)
         }
     }
 
@@ -436,40 +583,76 @@ class MainActivity : AppCompatActivity() {
                     text = texto,
                     onStart = { textView.text = "Nicky está hablando (nube)..." },
                     onDone  = {
+                        state = State.IDLE
                         textView.text = "Listo, te escucho…"
                         followupUntil = System.currentTimeMillis() + FOLLOWUP_MS
                         startListeningWindow("es-ES")
                     },
                     onError = { msg ->
                         textView.text = "Error: $msg. Paso a modo local."
-                        // si falla nube, cae a local
-                        textView.postDelayed({
-                            startListeningWindow("es-ES")
-                        }, 200)
+                        val utteranceId = "local_${System.currentTimeMillis()}"
+                        synchronized(ttsCallbacks) {
+                            ttsCallbacks[utteranceId] = {
+                                if (state == State.SPEAKING) {
+                                    state = State.IDLE
+                                    textView.text = "Listo, te escucho…"
+                                    followupUntil = System.currentTimeMillis() + FOLLOWUP_MS
+                                    textView.postDelayed({ startListeningWindow("es-ES") }, MIC_REOPEN_DELAY_MS)
+                                }
+                            }
+                        }
+                        tts?.speak(
+                            "Estoy en modo local por ahora.",
+                            TextToSpeech.QUEUE_FLUSH,
+                            null,
+                            utteranceId
+                        )
                     }
                 )
             }
         } else {
+            state = State.SPEAKING
             textView.text = "Nicky está hablando (local)…"
-            tts?.speak("Hola, soy Nicky en modo local por desconexión de internet.",
-                TextToSpeech.QUEUE_FLUSH, null, "nicky_local")
-            textView.postDelayed({
-                textView.text = "Listo, te escucho…"
-                followupUntil = System.currentTimeMillis() + FOLLOWUP_MS
-                startListeningWindow("es-ES")
-            }, 1200)
+
+            val utteranceId = "local_${System.currentTimeMillis()}"
+            synchronized(ttsCallbacks) {
+                ttsCallbacks[utteranceId] = {
+                    // Se llama EXACTAMENTE cuando termina de hablar
+                    if (state != State.SPEAKING) {
+                        // Ignorar si el estado ya cambió
+                    } else {
+                        state = State.IDLE
+                        textView.text = "Listo, te escucho…"
+                        followupUntil = System.currentTimeMillis() + FOLLOWUP_MS
+                        textView.postDelayed({ startListeningWindow("es-ES") }, MIC_REOPEN_DELAY_MS)
+                    }
+                }
+            }
+            tts?.speak(
+                "Hola, soy Nicky en modo local por desconexión de internet.",
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                utteranceId
+            )
         }
     }
 
-    /** TTS local y al terminar escuchar */
+    /** TTS local y al terminar escuchar (sin delays fijos) */
     private fun speakLocalThenListen(texto: String) {
         state = State.SPEAKING
         textView.text = "Nicky está hablando (local)…"
-        tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, null, "nicky_local")
-        textView.postDelayed({
-            textView.text = "Listo, te escucho…"
-            startListeningWindow("es-ES")
-        }, 1200)
+        val utteranceId = "local_${System.currentTimeMillis()}"
+        synchronized(ttsCallbacks) {
+            ttsCallbacks[utteranceId] = {
+                if (state != State.SPEAKING) {
+                    // Ignorar si ya no estamos en SPEAKING
+                } else {
+                    textView.text = "Listo, te escucho…"
+                    textView.postDelayed({ startListeningWindow("es-ES") }, MIC_REOPEN_DELAY_MS)
+                }
+            }
+        }
+        tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
     }
 
     /** Inicia una sesión de STT. Al recibir texto final, responde y vuelve a escuchar. */
@@ -483,7 +666,7 @@ class MainActivity : AppCompatActivity() {
             Speech.listenFlow(
                 recognizer = recognizer!!,
                 language = "es-ES",      // lo que probaste en la tablet
-                preferOffline = false
+                preferOffline = !isOnline
             ).collectLatest { ev ->
                 ev.listening?.let { listening ->
                     if (!listening && state == State.LISTENING && textView.text.contains("Escuchando")) {
