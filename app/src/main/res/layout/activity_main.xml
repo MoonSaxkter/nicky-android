@@ -1,26 +1,160 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp"
-    tools:context=".MainActivity">
+    android:background="@drawable/premium_dark_bg"
+    android:fitsSystemWindows="true">
 
+    <!-- Decoración minimalista - círculo sutil -->
+    <View
+        android:id="@+id/decorElement"
+        android:layout_width="300dp"
+        android:layout_height="300dp"
+        android:background="@drawable/subtle_glow"
+        android:alpha="0.03"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="-100dp"
+        android:layout_marginEnd="-100dp"/>
+
+    <!-- Container principal con glassmorphism elegante -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/mainContainer"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        app:cardCornerRadius="20dp"
+        app:cardElevation="0dp"
+        app:cardBackgroundColor="@android:color/transparent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintVertical_bias="0.4">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="40dp"
+            android:background="@drawable/premium_glass_card">
+
+            <!-- Logo minimalista -->
+            <View
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_gravity="center"
+                android:background="@drawable/premium_logo"
+                android:layout_marginBottom="32dp"/>
+
+            <!-- Título elegante -->
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Nicky"
+                android:textSize="32sp"
+                android:textColor="#FFFFFF"
+                android:gravity="center"
+                android:fontFamily="@font/inter_light"
+                android:letterSpacing="0.05"
+                android:layout_marginBottom="8dp"/>
+
+            <!-- Subtítulo sutil -->
+            <TextView
+                android:id="@+id/subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Asistente inteligente"
+                android:textSize="14sp"
+                android:textColor="#B0B0B0"
+                android:gravity="center"
+                android:fontFamily="@font/inter_regular"
+                android:letterSpacing="0.02"
+                android:layout_marginBottom="48dp"/>
+
+            <!-- Estado minimalista -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_gravity="center"
+                android:layout_marginBottom="40dp"
+                android:padding="16dp"
+                android:background="@drawable/status_minimal">
+
+                <View
+                    android:id="@+id/statusDot"
+                    android:layout_width="6dp"
+                    android:layout_height="6dp"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginEnd="12dp"
+                    android:background="@drawable/active_dot"/>
+
+                <TextView
+                    android:id="@+id/textView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Listo"
+                    android:textSize="13sp"
+                    android:textColor="#E0E0E0"
+                    android:fontFamily="@font/inter_medium"/>
+            </LinearLayout>
+
+            <!-- Botón principal premium -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonTalk"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:text="Hablar"
+                android:textAllCaps="false"
+                android:textSize="16sp"
+                android:textColor="#FFFFFF"
+                android:fontFamily="@font/inter_medium"
+                android:letterSpacing="0.02"
+                style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                app:cornerRadius="28dp"
+                app:backgroundTint="@null"
+                android:background="@drawable/premium_button"
+                android:elevation="8dp"
+                android:stateListAnimator="@animator/subtle_press"/>
+
+        </LinearLayout>
+    </androidx.cardview.widget.CardView>
+
+    <!-- Botón flotante sutil -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fabSettings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="32dp"
+        android:src="@drawable/ic_minimal_settings"
+        app:tint="#FFFFFF"
+        app:backgroundTint="#1A1A1A"
+        app:borderWidth="0dp"
+        app:elevation="6dp"
+        app:fabSize="mini"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"/>
+
+    <!-- Footer discreto -->
     <TextView
-        android:id="@+id/textView"
+        android:id="@+id/footer"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="¡Hola! Soy Nicky 👋"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:paddingBottom="24dp" />
+        android:text="v1.0"
+        android:textSize="10sp"
+        android:textColor="#606060"
+        android:fontFamily="@font/inter_light"
+        android:letterSpacing="0.05"
+        android:layout_marginBottom="20dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
 
-    <Button
-        android:id="@+id/buttonTalk"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Hablar con Nicky" />
-
-</LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
