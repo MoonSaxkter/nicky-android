@@ -28,6 +28,7 @@ private var heardSomething = false
 private var lastPartial: String? = null
 private var finalizeJob: kotlinx.coroutines.Job? = null
 private var followupUntil: Long = 0L
+private var greetedUntil: Long = 0L
 private var partialDebounceJob: kotlinx.coroutines.Job? = null
 private var handlingUtterance: Boolean = false
 
@@ -338,20 +339,72 @@ class MainActivity : AppCompatActivity() {
             followupUntil = System.currentTimeMillis() + FOLLOWUP_MS
         }
 
-        val respuesta =
-            if (low.startsWith("buscar ") || low.startsWith("investiga ")) {
-                val consulta = low.removePrefix("buscar ").removePrefix("investiga ").trim()
-                if (consulta.isBlank()) "¿Qué querés que busque?" else "Buscaré: $consulta. (demo)"
-            } else {
-                // Variar un poco para sonar más natural
-                val opciones = listOf(
-                    "Te escuché: $finalText",
-                    "Entendí: $finalText",
-                    "Escuché que dijiste: $finalText",
-                    "Vale, $finalText"
-                )
-                opciones.random()
+        // --- Saludos con más frases y anti-repetición ---
+        val greetingTriggers = listOf(
+            "hola",
+            "buenos días",
+            "buenas tardes",
+            "buenas noches",
+            "qué tal",
+            "que tal",
+            "como estás",
+            "cómo estás",
+            "hey",
+            "buen día",
+            "buen dia"
+        )
+        val esSaludo = greetingTriggers.any { low.contains(it) }
+
+        var respuesta = ""
+        if (esSaludo && hasKeyword) {
+            val now = System.currentTimeMillis()
+            val primeraVez = now > greetedUntil
+
+            val opcionesPrimeraVezOnline = listOf(
+                "¡Hola! ¿En qué te puedo ayudar?",
+                "¡Buenas! Decime, ¿qué ocupás?",
+                "Aquí estoy, lista para ayudarte.",
+                "¡Qué tal! Contame, ¿qué hacemos?"
+            )
+            val opcionesFollowUpOnline = listOf(
+                "De nuevo por aquí 😊 ¿qué más hacemos?",
+                "Te escucho, ¿qué más necesitás?",
+                "Decime nomás."
+            )
+
+            val opcionesPrimeraVezLocal = listOf(
+                "¡Hola! Estoy en modo local, pero igual te escucho.",
+                "¡Buenas! Sin conexión, pero aquí estoy.",
+                "Hola, aunque sin internet sigo escuchándote."
+            )
+            val opcionesFollowUpLocal = listOf(
+                "Te sigo escuchando.",
+                "Dale, te escucho.",
+                "Aquí estoy, decime."
+            )
+
+            respuesta = when {
+                isOnline && primeraVez  -> opcionesPrimeraVezOnline.random()
+                isOnline && !primeraVez -> opcionesFollowUpOnline.random()
+                !isOnline && primeraVez -> opcionesPrimeraVezLocal.random()
+                else                    -> opcionesFollowUpLocal.random()
             }
+
+            // Evitar repetir saludo completo por ~90s
+            greetedUntil = now + 90_000
+        } else if (low.startsWith("buscar ") || low.startsWith("investiga ")) {
+            val consulta = low.removePrefix("buscar ").removePrefix("investiga ").trim()
+            respuesta = if (consulta.isBlank()) "¿Qué querés que busque?" else "Buscaré: $consulta. (demo)"
+        } else {
+            // Variar un poco para sonar más natural
+            val opciones = listOf(
+                "Te escuché: $finalText",
+                "Entendí: $finalText",
+                "Escuché que dijiste: $finalText",
+                "Vale, $finalText"
+            )
+            respuesta = opciones.random()
+        }
 
         if (isOnline) {
             lifecycleScope.launch {
