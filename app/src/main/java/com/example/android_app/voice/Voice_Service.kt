@@ -3,6 +3,9 @@ package com.example.android_app.voice
 import android.content.Context
 import android.media.MediaPlayer
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.AudioFocusRequest
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,10 +21,45 @@ object VoiceService {
     private val client by lazy {
         OkHttpClient.Builder()
             .retryOnConnectionFailure(true)
-            .callTimeout(java.time.Duration.ofSeconds(30))
-            .connectTimeout(java.time.Duration.ofSeconds(15))
-            .readTimeout(java.time.Duration.ofSeconds(30))
             .build()
+    }
+
+    /** Solicita foco de audio para TTS. Devuelve triple (concedido, AudioManager, AudioFocusRequest?) */
+    private fun requestAudioFocus(context: Context, onFocusChange: (Int) -> Unit): Triple<Boolean, AudioManager, AudioFocusRequest?> {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val afr = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(attrs)
+                .setOnAudioFocusChangeListener { change -> onFocusChange(change) }
+                .setWillPauseWhenDucked(false)
+                .build()
+            val res = am.requestAudioFocus(afr)
+            Triple(res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED, am, afr)
+        } else {
+            @Suppress("DEPRECATION")
+            val res = am.requestAudioFocus(
+                { change -> onFocusChange(change) },
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+            )
+            Triple(res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED, am, null)
+        }
+    }
+
+    /** Libera el foco de audio si fue solicitado. */
+    private fun abandonAudioFocus(am: AudioManager, afr: AudioFocusRequest?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (afr != null) am.abandonAudioFocusRequest(afr)
+        } else {
+            @Suppress("DEPRECATION")
+            am.abandonAudioFocus(null)
+        }
     }
 
     /**
@@ -92,33 +130,82 @@ object VoiceService {
 
             withContext(Dispatchers.Main) {
                 onStart?.invoke()
-                val player = MediaPlayer()
-                player.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build()
-                )
-                player.setVolume(1.0f, 1.0f)
-                player.setDataSource(mp3.absolutePath)
-                player.setOnPreparedListener { it.start() }
-                player.setOnCompletionListener {
-                    it.release()
-                    onDone?.invoke()
-                    // Limpieza
+
+                var currentVolume = 1.0f
+                var player: MediaPlayer? = null
+                var focusAm: AudioManager? = null
+                var focusAfr: AudioFocusRequest? = null
+
+                // 1) Pide foco de audio (con ducking)
+                val (granted, tmpAm, tmpAfr) = requestAudioFocus(context) { change ->
+                    when (change) {
+                        AudioManager.AUDIOFOCUS_GAIN -> {
+                            // Recupera volumen normal
+                            player?.setVolume(1.0f, 1.0f)
+                            currentVolume = 1.0f
+                        }
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                            // Baja volumen mientras otra app suena
+                            player?.setVolume(0.2f, 0.2f)
+                            currentVolume = 0.2f
+                        }
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                            // Pausa breve si otra app toma foco temporal
+                            if (player?.isPlaying == true) player?.pause()
+                        }
+                        AudioManager.AUDIOFOCUS_LOSS -> {
+                            // Pérdida total de foco: detén y libera
+                            player?.let {
+                                if (it.isPlaying) it.stop()
+                                it.release()
+                            }
+                            // Abandona foco usando variables externas
+                            focusAm?.let { amLocal -> abandonAudioFocus(amLocal, focusAfr) }
+                        }
+                    }
+                }
+                // Guarda las referencias reales del foco
+                focusAm = tmpAm
+                focusAfr = tmpAfr
+
+                if (!granted) {
+                    onError?.invoke("No se pudo obtener el foco de audio.")
+                    // Limpia archivo temporal si no vamos a reproducir
                     mp3.delete()
+                    return@withContext
                 }
-                player.setOnErrorListener { mp, _, what ->
-                    mp.release()
-                    onError?.invoke("Error de reproducción ($what).")
-                    mp3.delete()
-                    true
+
+                // 2) Prepara y reproduce
+                player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .build()
+                    )
+                    setVolume(currentVolume, currentVolume)
+                    setDataSource(mp3.absolutePath)
+                    setOnPreparedListener { it.start() }
+                    setOnCompletionListener {
+                        it.release()
+                        onDone?.invoke()
+                        focusAm?.let { amLocal -> abandonAudioFocus(amLocal, focusAfr) }
+                        // Limpieza
+                        mp3.delete()
+                    }
+                    setOnErrorListener { mp, _, what ->
+                        mp.release()
+                        onError?.invoke("Error de reproducción ($what).")
+                        focusAm?.let { amLocal -> abandonAudioFocus(amLocal, focusAfr) }
+                        mp3.delete()
+                        true
+                    }
+                    setOnInfoListener { _, what, extra ->
+                        Log.d(TAG, "MediaPlayer info: what=$what extra=$extra")
+                        false
+                    }
+                    prepareAsync()
                 }
-                player.setOnInfoListener { _, what, extra ->
-                    Log.d(TAG, "MediaPlayer info: what=$what extra=$extra")
-                    false
-                }
-                player.prepareAsync()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Fallo TTS", e)
