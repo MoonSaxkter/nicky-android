@@ -1,3 +1,4 @@
+import com.android.build.gradle.internal.cxx.configure.gradleLocalProperties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,20 +9,21 @@ android {
     namespace = "com.example.android_app"        // ← debe coincidir con el package del código
     compileSdk = 35
 
-    compileSdk = 35
-
     defaultConfig {
         applicationId = "com.example.android_app" // ← igual que arriba
         minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
 
         // Requerido por Chaquopy
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+        // Exponer claves desde local.properties a BuildConfig
+        val localProps = gradleLocalProperties(rootDir, providers)
+        buildConfigField("String", "ELEVEN_API_KEY", "\"${localProps.getProperty("ELEVEN_API_KEY", "")}\"")
+        buildConfigField("String", "ELEVEN_VOICE", "\"${localProps.getProperty("ELEVEN_VOICE", "")}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -38,8 +40,9 @@ android {
         }
     }
 
-    // Activa ViewBinding para no depender de R en imports manuales
+    // Activa generación de BuildConfig y ViewBinding
     buildFeatures {
+        buildConfig = true
         viewBinding = true
     }
 
