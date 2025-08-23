@@ -2,6 +2,8 @@ package com.example.android_app
 
 import android.Manifest
 import android.os.Bundle
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import androidx.appcompat.app.AppCompatActivity
 import android.widget.Button
 import android.widget.TextView
@@ -32,6 +34,8 @@ private var greetedUntil: Long = 0L
 private var partialDebounceJob: kotlinx.coroutines.Job? = null
 private var handlingUtterance: Boolean = false
 
+private var pendingPermissionAction: (() -> Unit)? = null
+
 class MainActivity : AppCompatActivity() {
 
 
@@ -52,10 +56,11 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            startListening()
+            pendingPermissionAction?.invoke()
         } else {
             textView.text = "Permiso de micrófono denegado"
         }
+        pendingPermissionAction = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,7 +93,15 @@ class MainActivity : AppCompatActivity() {
         // Botón Hablar: inicia el ciclo manos libres con palabra clave
         buttonTalk.setOnClickListener {
             stopListeningIfNeeded()
-            speakAndThenListen("Hola, soy Nicky. ¿Listo para conversar?")
+            val action = {
+                speakAndThenListen("Hola, soy Nicky. ¿Listo para conversar?")
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                action()
+            } else {
+                pendingPermissionAction = action
+                askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+            }
         }
 
         // (Opcional) Botón Escuchar manual
@@ -99,12 +112,20 @@ class MainActivity : AppCompatActivity() {
                 state = State.IDLE
             } else {
                 tts?.stop()
-                askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                val action = { startListeningWindow("es-ES") }
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    action()
+                } else {
+                    pendingPermissionAction = action
+                    askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
             }
         }
 
-        // Pide permiso una vez al abrir para que la primera vuelta pueda escuchar sola
-        askAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        // Set texto inicial amigable si está idle
+        if (state == State.IDLE) {
+            textView.text = "Tocá \"Hablar\" para empezar"
+        }
     }
 
     private fun startListeningWindow(language: String = "es-ES") {
@@ -473,58 +494,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Inicia una sesión de STT. Al recibir texto final, responde y vuelve a escuchar. */
-    private fun startListening() {
-        // Crea recognizer por sesión
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        state = State.LISTENING
-        textView.text = "🎙️ Escuchando… hablá con normalidad"
-
-        lifecycleScope.launch {
-            Speech.listenFlow(
-                recognizer = recognizer!!,
-                language = "es-ES",      // lo que probaste en la tablet
-                preferOffline = false
-            ).collectLatest { ev ->
-                ev.listening?.let { listening ->
-                    if (!listening && state == State.LISTENING && textView.text.contains("Escuchando")) {
-                        textView.text = "Procesando…"
-                    }
-                }
-                ev.partial?.let { partial ->
-                    // Mostrar parcial, no cambia estado
-                    textView.text = "🗣️ $partial"
-                }
-                ev.finalText?.let { final ->
-                    // Tenemos texto final: responder y volver a escuchar
-                    val low = final.lowercase().trim()
-                    val respuesta = when {
-                        low.startsWith("buscar ") || low.startsWith("investiga ") -> {
-                            val q = low.removePrefix("buscar ").removePrefix("investiga ").trim()
-                            if (q.isBlank()) "¿Qué querés que busque?" else "Buscaré: $q. (demo)"
-                        }
-                        low.contains("hola") -> "¡Hola! ¿En qué te ayudo?"
-                        else -> "Te escuché: $final"
-                    }
-
-                    // Habla respuesta y vuelve a escuchar
-                    speakAndThenListen(respuesta)
-                }
-                ev.error?.let { err ->
-                    textView.text = "⚠️ $err"
-                    // En errores comunes, intenta escuchar de nuevo
-                    if (err.contains("No te entendí", true) ||
-                        err.contains("No detecté voz", true) ||
-                        err.contains("Tiempo de red", true) ||
-                        err.contains("Error de red", true)
-                    ) {
-                        textView.postDelayed({ startListening() }, 600)
-                    } else {
-                        state = State.IDLE
-                    }
-                }
-            }
-        }
-    }
+    // (Ya no se usa startListening() directamente tras permiso)
 
     private fun stopListeningIfNeeded() {
         windowJob?.cancel()
