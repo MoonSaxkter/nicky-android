@@ -19,6 +19,10 @@ import android.speech.SpeechRecognizer
 import java.util.Locale
 import android.content.pm.PackageManager
 import android.os.SystemClock
+import android.content.Intent
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
+import com.example.android_app.util.Bt
 
 private const val LISTEN_WINDOW_MS = 6000L
 private const val FOLLOWUP_MS = 10000L
@@ -56,6 +60,12 @@ class MainActivity : AppCompatActivity() {
     private var recognizer: SpeechRecognizer? = null
     private var isListening: Boolean = false
 
+    private val enableBtLauncher = registerForActivityResult(StartActivityForResult()) { _ ->
+        textView.text = if (Bt.isEnabled()) "Bluetooth activado ✅" else "No se activó Bluetooth"
+        // reabrir escucha si corresponde
+        if (state != State.SPEAKING) startListeningWindow("es-ES")
+    }
+
     private enum class State { IDLE, SPEAKING, LISTENING }
     private var state: State = State.IDLE
 
@@ -68,6 +78,21 @@ class MainActivity : AppCompatActivity() {
             onMicGranted = null
         } else {
             textView.text = "Permiso de micrófono denegado"
+        }
+    }
+
+    private fun ensureBtPermission(onGranted: () -> Unit) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            val perm = android.Manifest.permission.BLUETOOTH_CONNECT
+            if (checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED) {
+                onGranted()
+            } else {
+                // Reutilizamos el mismo launcher de permisos (RequestPermission)
+                onMicGranted = onGranted
+                askAudioPermission.launch(perm)
+            }
+        } else {
+            onGranted()
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -459,6 +484,38 @@ class MainActivity : AppCompatActivity() {
                 return
             }
         }
+        // --- Comandos Bluetooth ---
+        run {
+            val low2 = low // alias
+            if (low2.contains("bluetooth")) {
+                if (!Bt.isSupported()) {
+                    responderYVolver(language, "Tu dispositivo no tiene Bluetooth.")
+                    return
+                }
+                when {
+                    low2.contains("activar") || low2.contains("encender") || low2.contains("prender") -> {
+                        ensureBtPermission {
+                            responderPrevio(language, "Abriendo diálogo para activar Bluetooth…")
+                            enableBtLauncher.launch(Bt.requestEnableIntent())
+                        }
+                        return
+                    }
+                    low2.contains("apagar") || low2.contains("desactivar") -> {
+                        ensureBtPermission {
+                            val ok = Bt.tryDisable()
+                            val msg = if (ok) "Apagando Bluetooth…" else "No pude apagarlo automáticamente en este dispositivo."
+                            responderYVolver(language, msg)
+                        }
+                        return
+                    }
+                    low2.contains("estado") || low2.contains("está encendido") || low2.contains("esta encendido") -> {
+                        val msg = if (Bt.isEnabled()) "Bluetooth está activado." else "Bluetooth está desactivado."
+                        responderYVolver(language, msg)
+                        return
+                    }
+                }
+            }
+        }
         val hasKeyword = KEYWORDS.any { k -> low.contains(k) }
         val allowFollowup = System.currentTimeMillis() <= followupUntil
         val proceed = hasKeyword || allowFollowup
@@ -566,6 +623,41 @@ class MainActivity : AppCompatActivity() {
         } else {
             textView.text = "Nicky está hablando (local)…"
             tts?.speak(respuesta, TextToSpeech.QUEUE_FLUSH, null, "nicky_reply")
+            textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS)
+        }
+    }
+
+    private fun responderPrevio(language: String, texto: String) {
+        if (isOnline) {
+            lifecycleScope.launch {
+                VoiceService.speak(
+                    context = this@MainActivity,
+                    text = texto,
+                    onStart = { textView.text = "Nicky está hablando (nube)..." },
+                    onDone  = { /* el launcher/flujo continuará */ },
+                    onError = { /* ignoramos errores breves aquí */ }
+                )
+            }
+        } else {
+            textView.text = "Nicky está hablando (local)…"
+            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, null, "bt_prev")
+        }
+    }
+
+    private fun responderYVolver(language: String, texto: String) {
+        if (isOnline) {
+            lifecycleScope.launch {
+                VoiceService.speak(
+                    context = this@MainActivity,
+                    text = texto,
+                    onStart = { textView.text = "Nicky está hablando (nube)..." },
+                    onDone  = { textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS) },
+                    onError = { msg -> textView.text = "Error: $msg" }
+                )
+            }
+        } else {
+            textView.text = "Nicky está hablando (local)…"
+            tts?.speak(texto, TextToSpeech.QUEUE_FLUSH, null, "bt_reply")
             textView.postDelayed({ startListeningWindow(language) }, MIC_REOPEN_DELAY_MS)
         }
     }
