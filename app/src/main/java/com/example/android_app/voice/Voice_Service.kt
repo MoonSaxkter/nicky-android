@@ -80,6 +80,10 @@ object VoiceService {
         val voiceId = BuildConfig.ELEVEN_VOICE.orEmpty()
         val TAG = "VoiceService"
 
+        // Diagnóstico: confirmar que las claves están llegando desde BuildConfig
+        Log.d(TAG, "ELEVEN_API_KEY length=${apiKey.length}, prefix=${apiKey.take(3)}…")
+        Log.d(TAG, "ELEVEN_VOICE=$voiceId")
+
         if (apiKey.isBlank() || voiceId.isBlank()) {
             onError?.invoke("Faltan claves de ElevenLabs (ELEVEN_API_KEY/ELEVEN_VOICE).")
             return@withContext
@@ -107,7 +111,13 @@ object VoiceService {
             val resp = client.newCall(req).execute()
             Log.d(TAG, "ElevenLabs response code=${resp.code}, message=${resp.message}")
             if (!resp.isSuccessful) {
-                onError?.invoke("ElevenLabs ${resp.code}: ${resp.message}")
+                if (resp.code == 401) {
+                    onError?.invoke("ElevenLabs 401: clave inválida o ausente. Verifica ELEVEN_API_KEY/ELEVEN_VOICE.")
+                } else if (resp.code == 403) {
+                    onError?.invoke("ElevenLabs 403: acceso denegado. Revisa permisos de la clave.")
+                } else {
+                    onError?.invoke("ElevenLabs ${resp.code}: ${resp.message}")
+                }
                 return@withContext
             }
 

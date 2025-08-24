@@ -27,12 +27,18 @@ import com.example.android_app.util.Bt
 private const val LISTEN_WINDOW_MS = 6000L
 private const val FOLLOWUP_MS = 10000L
 
+// Detecta "Nicky, ..." al inicio y lo elimina para entender la intención
+private val WAKE = Regex("^(nicky|niki|niky|nikki)[,\\s:-]+", RegexOption.IGNORE_CASE)
+
 // Espera mínima antes de reabrir el micro tras hablar (online u offline)
 private const val MIC_REOPEN_DELAY_MS = 0L
 
 // Cooldown para evitar “flapping” si se intenta abrir el micro demasiado seguido
 private const val MIC_COOLDOWN_MS = 900L
 private val KEYWORDS = listOf("nicky", "niki", "niky", "nikki", "nicol", "asistente", "ayuda")
+
+// Triggers de búsqueda en lenguaje natural
+private val SEARCH_TRIGGERS = listOf("buscar", "busca", "investiga", "investigar", "averigua", "averiguar")
 
 private var listenJob: kotlinx.coroutines.Job? = null
 private var windowJob: kotlinx.coroutines.Job? = null
@@ -448,6 +454,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Extrae una consulta de búsqueda si el usuario dijo "buscar/busca/investiga/averigua ...".
+     *  Devuelve null si no encuentra un trigger o si no hay texto útil después.
+     */
+    private fun extractSearchQuery(textOriginal: String): String? {
+        val low = textOriginal.lowercase()
+        var bestIdx = Int.MAX_VALUE
+        var found: String? = null
+        for (t in SEARCH_TRIGGERS) {
+            val i = low.indexOf(t)
+            if (i >= 0 && i < bestIdx) {
+                bestIdx = i
+                found = t
+            }
+        }
+        if (found == null) return null
+        // Toma todo lo que aparece después del trigger encontrado
+        val after = textOriginal.substring(bestIdx + found.length)
+            .trim()
+            .trimStart(':', '-', ',', '.', ' ')
+        var q = after
+        // Quitar prefijos de relleno al inicio de la consulta
+        val fillers = listOf(
+            "en google ",
+            "en internet ",
+            "google ",
+            "en la web ",
+            "sobre ",
+            "acerca de "
+        )
+        for (p in fillers) {
+            if (q.lowercase().startsWith(p)) {
+                q = q.substring(p.length).trim()
+                break
+            }
+        }
+        return q.takeIf { it.isNotBlank() }
+    }
+
     /** Maneja texto final (con keyword o dentro de follow-up) y vuelve a escuchar */
     private fun handleFinalText(language: String, finalText: String) {
         // Ensure only one handling path executes (safety in case of concurrent callbacks)
@@ -456,6 +500,54 @@ class MainActivity : AppCompatActivity() {
         finalizeJob?.cancel()
         partialDebounceJob?.cancel()
         val low = finalText.lowercase()
+        // Remueve "Nicky, " del inicio si viene con palabra clave antes del comando
+        val noWake = low.replaceFirst(WAKE, "").trim()
+        // --- BÚSQUEDA: detecta "buscar/busca/investiga/averigua" en cualquier lugar ---
+        extractSearchQuery(noWake)?.let { consultaCruda ->
+            if (consultaCruda.isBlank()) {
+                responderYVolver(language, "¿Qué querés que busque?")
+                return
+            }
+            lifecycleScope.launch {
+                val refinada = try {
+                    com.example.android_app.util.OpenAIService.refineSearchQuery(consultaCruda, language)
+                } catch (_: Exception) {
+                    consultaCruda
+                }
+                val url = "https://www.google.com/search?q=" +
+                    java.net.URLEncoder.encode(refinada, "UTF-8")
+                val aviso = "Buscando: $refinada"
+                if (isOnline) {
+                    VoiceService.speak(
+                        context = this@MainActivity,
+                        text = aviso,
+                        onStart = { textView.text = "Nicky está hablando (nube)..." },
+                        onDone  = {
+                            startActivity(android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(url)
+                            ))
+                            textView.postDelayed({ startListeningWindow(language) }, 300)
+                        },
+                        onError = {
+                            textView.text = "Error de voz. Abro el navegador…"
+                            startActivity(android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(url)
+                            ))
+                        }
+                    )
+                } else {
+                    // Offline: igual abrimos por si hay caché del navegador
+                    tts?.speak(aviso, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "open_google")
+                    startActivity(android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(url)
+                    ))
+                }
+            }
+            return
+        }
         // --- Comandos de salida (funcionan siempre, con o sin keyword) ---
         run {
             val exitCommands = setOf("salir", "cerrar", "terminar", "cierra", "apagar")
@@ -557,7 +649,7 @@ class MainActivity : AppCompatActivity() {
             "buen día",
             "buen dia"
         )
-        val esSaludo = greetingTriggers.any { low.contains(it) }
+        val esSaludo = greetingTriggers.any { noWake.contains(it) }
 
         var respuesta = ""
         if (esSaludo && hasKeyword) {
@@ -596,10 +688,9 @@ class MainActivity : AppCompatActivity() {
 
             // Evitar repetir saludo completo por ~90s
             greetedUntil = now + 90_000
-        } else if (low.startsWith("buscar ") || low.startsWith("investiga ")) {
-            val consulta = low.removePrefix("buscar ").removePrefix("investiga ").trim()
-            respuesta = if (consulta.isBlank()) "¿Qué querés que busque?" else "Buscaré: $consulta. (demo)"
-        } else {
+        }
+        // (eliminado: rama de búsqueda específica para "buscar"/"investiga", ahora lo maneja extractSearchQuery)
+        else {
             // Variar un poco para sonar más natural
             val opciones = listOf(
                 "Te escuché: $finalText",
@@ -773,8 +864,8 @@ class MainActivity : AppCompatActivity() {
                     // Tenemos texto final: responder y volver a escuchar
                     val low = final.lowercase().trim()
                     val respuesta = when {
-                        low.startsWith("buscar ") || low.startsWith("investiga ") -> {
-                            val q = low.removePrefix("buscar ").removePrefix("investiga ").trim()
+                        extractSearchQuery(final) != null -> {
+                            val q = extractSearchQuery(final)!!.trim()
                             if (q.isBlank()) "¿Qué querés que busque?" else "Buscaré: $q. (demo)"
                         }
                         low.contains("hola") -> "¡Hola! ¿En qué te ayudo?"
@@ -818,6 +909,22 @@ class MainActivity : AppCompatActivity() {
         }
         recognizer = null
         if (state == State.LISTENING) state = State.IDLE
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Detener escucha y TTS al salir a background
+        stopListeningIfNeeded()
+        tts?.stop()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Cancelar trabajos pendientes para evitar reabrir el micro en background
+        listenJob?.cancel()
+        windowJob?.cancel()
+        finalizeJob?.cancel()
+        partialDebounceJob?.cancel()
     }
 
     override fun onDestroy() {

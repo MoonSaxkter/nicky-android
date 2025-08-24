@@ -10,20 +10,24 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.android_app" // ← igual que arriba
+        applicationId = "com.example.android_app"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
-        // Requerido por Chaquopy
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
-        // Exponer claves desde local.properties a BuildConfig
+
+        // ← LEE local.properties (ojo al nombre: localProps, sin espacios)
         val localProps = gradleLocalProperties(rootDir, providers)
+
+        // ← EXPONE CLAVES A BuildConfig
         buildConfigField("String", "ELEVEN_API_KEY", "\"${localProps.getProperty("ELEVEN_API_KEY", "")}\"")
         buildConfigField("String", "ELEVEN_VOICE", "\"${localProps.getProperty("ELEVEN_VOICE", "")}\"")
+        buildConfigField("String", "OPENAI_API_KEY", "\"${localProps.getProperty("OPENAI_API_KEY", "")}\"")
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
